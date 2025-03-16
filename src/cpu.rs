@@ -113,35 +113,94 @@ impl CPU {
         ret.window.limit_update_rate(Some(std::time::Duration::from_millis(16))); // ~60 FPS
         return ret;
     }
-
-    fn start(&mut self) -> Result<(), String> {
+    pub fn start(&mut self) -> Result<(), String> {
         let mut buffer = [0u32; WIDTH * HEIGHT];
-        // execute loop
-        let frame_duration = Duration::from_millis(16); // approx 60 fps
-
-        while self.window.is_open(){
-            let frame_start = Instant::now();
-            // execute 10 instr per frame
-            for _ in 0..1 {
+        
+        // Target frequencies:
+        let cpu_frequency: f64 = 600.0; // CPU instructions per second
+        let cpu_cycle_duration = Duration::from_secs_f64(1.0 / cpu_frequency);
+        
+        let timer_interval = Duration::from_millis(16); // ~60Hz timer update
+        let display_interval = Duration::from_millis(16); // ~60FPS display update
+    
+        let mut last_cpu_time = Instant::now();
+        let mut last_timer_time = Instant::now();
+        let mut last_display_time = Instant::now();
+    
+        while self.window.is_open() {
+            let now = Instant::now();
+    
+            // === CPU Cycle: execute as many instructions as the elapsed time allows ===
+            while now.duration_since(last_cpu_time) >= cpu_cycle_duration {
                 self.execute()?;
+                last_cpu_time += cpu_cycle_duration;
             }
-
-            if self.display_flag {
+    
+            // === Timer Update: run at 60Hz regardless of CPU speed ===
+            if now.duration_since(last_timer_time) >= timer_interval {
+                if self.delay_timer > 0 {
+                    self.delay_timer -= 1;
+                }
+                if self.sound_timer > 0 {
+                    self.sound_timer -= 1;
+                }
+                last_timer_time += timer_interval;
+            }
+    
+            // === Process Input: update your keypad state here if needed ===
+            // (You can poll keys and update a shared keypad array, etc.)
+    
+            // === Display Update: refresh the display at about 60FPS or when flagged ===
+            if now.duration_since(last_display_time) >= display_interval || self.display_flag {
                 self.update_display_buffer(&mut buffer);
-                self.window.update_with_buffer(&buffer, 64, 32).unwrap();
+                self.window.update_with_buffer(&buffer, WIDTH, HEIGHT).unwrap();
+                last_display_time = now;
+                self.display_flag = false;
             }
-
-            // decrement timers
-            self.delay_timer = if self.delay_timer == 0 {60} else {self.delay_timer - 1};
-            self.sound_timer = if self.sound_timer == 0 {60} else {self.sound_timer - 1};
-            
-            let elapsed = frame_start.elapsed();
-            if elapsed < frame_duration {
-                std::thread::sleep(frame_duration - elapsed);
-            }
+    
+            // Sleep briefly to avoid busy waiting (adjust as needed)
+            std::thread::sleep(Duration::from_millis(1));
         }
         Ok(())
     }
+    
+    // fn start(&mut self) -> Result<(), String> {
+    //     let mut buffer = [0u32; WIDTH * HEIGHT];
+    //     // execute loop
+    //     let frame_duration = Duration::from_millis(16); // approx 60 fps
+
+    //     let mut last_timer_update = Instant::now();
+    //     let mut last_cycle_update = Instant::now();
+    //     let timer_interval = Duration::from_millis(16); // 60Hz
+    //     let cycle_interval = Duration::from_micros(2000); // 500Hz CPU = 1/500s = 2000μs
+    //     while self.window.is_open(){
+    //         let frame_start = Instant::now();
+    //         // if let keys = self.window.get_keys() {
+    //         //     for key in keys {
+    //         //         println!("Detected key down: {:?}", key);
+    //         //     }
+    //         // }
+    //         // execute 10 instr per frame
+    //         for _ in 0..10 {
+    //             self.execute()?;
+    //         }
+
+    //         if self.display_flag {
+    //             self.update_display_buffer(&mut buffer);
+    //             self.window.update_with_buffer(&buffer, 64, 32).unwrap();
+    //         }
+
+    //         // decrement timers
+    //         self.delay_timer = if self.delay_timer == 0 {60} else {self.delay_timer - 1};
+    //         self.sound_timer = if self.sound_timer == 0 {60} else {self.sound_timer - 1};
+            
+    //         let elapsed = frame_start.elapsed();
+    //         if elapsed < frame_duration {
+    //             std::thread::sleep(frame_duration - elapsed);
+    //         }
+    //     }
+    //     Ok(())
+    // }
 
     pub fn load_and_execute(&mut self, filename: String) -> Result<(), String> {
         let f = BufReader::new(File::open(filename).unwrap());
@@ -257,12 +316,11 @@ impl CPU {
                     }
                     4 => {
                         let val= self.register[vx] as u16 + self.register[vy] as u16;
-                        if val > 0xFF {
-                            self.register[0xF] = 1;
-                        } else{
-                            self.register[0xF] = 0;
-                        }
                         self.register[vx] = (val & 0xFF) as u8;
+                        self.register[0xF] = if val > 0xFF {1} else {0};
+                        // let (sum, carry) = self.register[vx].overflowing_add(self.register[vy]);
+                        // self.register[vx] = sum;
+                        // self.register[0xF] = if carry { 1 } else { 0 };
                         println!(" add 0x{:01X}, 0x{:01X}", vx, vy); 
                     }
                     5 => {
@@ -278,11 +336,15 @@ impl CPU {
                         println!(" rsub 0x{:01X}, 0x{:01X}", vx, vy); 
                     }
                     6 => {
-                        self.register[vx] = self.register[vy] >> 1; 
+                        let shifted = self.register[vy] & 1;
+                        self.register[vx] = self.register[vy] >> 1;
+                        self.register[0xF] = shifted;
                         println!(" str 0x{:01X}, 0x{:01X}", vx, vy); 
                     }
                     0xE => {
+                        let shifted = (self.register[vy] & 0b10000000) >> 7;
                         self.register[vx] = self.register[vy] << 1; 
+                        self.register[0xF] = shifted;
                         println!(" stl 0x{:01X}, 0x{:01X}", vx, vy); 
                     }
                     _ => {
@@ -323,6 +385,9 @@ impl CPU {
                 for i in 0..n {
                     let byte = self.mem[(self.I + i as u16) as usize];
                     print!("0x{:02X} ", byte);
+                    if y + i >= 32 {
+                        break;
+                    }
                     for j in 0..8{
                         if x + j >= 64 {
                             break;
@@ -335,28 +400,39 @@ impl CPU {
                         }
                         self.display[(y + i) as usize][(x + j) as usize] = cur ^ new; 
                     }
-                    if y + i >= 32 {
-                        break;
-                    }
                 }
                     println!();
                 self.display_flag = true;
             }
             0xE => { // 
-                let vx = ((instr & 0x0F00) >> 12) as usize;
+                let vx = ((instr & 0x0F00) >> 8) as usize;
                 let keycode = self.register[vx];
+                println!(" keycode: 0x{:X}  ", keycode);
                 match instr & 0x00FF {
                     0x9E => { // skip if pressed
-                        if self.window.is_key_down(get_qwerty_key(keycode).unwrap()) {
-                            self.PC += 2;
+                        if let Some(qwerty_key) = get_qwerty_key(keycode) {
+                            if self.window.is_key_down(qwerty_key) {
+                                self.PC += 2;
+                                println!("GOOD");
+                            }
+                        } else {
+                            println!("Invalid CHIP-8 keycode in VX: {}", keycode);
                         }
                         println!(" skp 0x{:X}", vx);
                     }
                     0xA1 => {
-                        if !self.window.is_key_down(get_qwerty_key(keycode).unwrap()) {
-                            self.PC += 2;
+                        if let Some(qwerty_key) = get_qwerty_key(keycode) {
+                            if !self.window.is_key_down(qwerty_key) {
+                                self.PC += 2;
+                                println!("GOOD");
+                            }
+                        } else {
+                            println!("Invalid CHIP-8 keycode in VX: {}", keycode);
                         }
                         println!(" snp 0x{:X}", vx);
+                        // if vx == 0 {
+                        //     return Err("monkey".to_string());
+                        // }
                     }
                     _ => {
                         return Err(format!("Instruction cannot be matched: 0x{:04X}", instr));
@@ -368,19 +444,24 @@ impl CPU {
                 match instr & 0x00FF {
                     0x07 => {
                         self.register[vx] = self.delay_timer;
+                        println!(" ldt 0x{:X}", vx);
                     }
                     0x15 => {
                         self.delay_timer = self.register[vx];
+                        println!(" sdt 0x{:X}", vx);
                     }
                     0x18 => {
                         self.sound_timer = self.register[vx];
+                        println!(" sst 0x{:X}", vx);
                     }
                     0x1E => {
                         self.I += self.register[vx] as u16;
+                        println!(" addI 0x{:X}", vx);
                     }
                     0x0A => { // get key
                         let keys = self.window.get_keys_pressed(minifb::KeyRepeat::No);
                         if let Some(&key) = keys.first() {
+                            println!("Detected keypress {:?}", key);
                             if let Some(chip8_key) = get_chip8_key(key) {
                                 self.register[vx] = chip8_key;
                             } else {
@@ -392,22 +473,26 @@ impl CPU {
                     }
                     0x29 => { // font character
                         self.I = (FONT_START + self.register[vx] as usize * 5) as u16;
+                        println!(" font 0x{:X}", vx);
                     }
                     0x33 => { // decimal division -- stores from I, I + 1, I + 2, in little endian
                         let val = self.register[vx];
                         self.mem[self.I as usize] = val / 100;
                         self.mem[self.I as usize + 1] = (val % 100) / 10;
                         self.mem[self.I as usize + 2] = val % 10;
+                        println!(" bcd 0x{:X}", vx);
                     }
                     0x55 => { // store memory
                         for i in 0..=vx {
                             self.mem[self.I as usize + i] = self.register[i]
                         }
+                        println!(" store 0x{:X}", vx);
                     }
                     0x65 => { // load memory
                         for i in 0..=vx {
                             self.register[i] = self.mem[self.I as usize + i]
                         }
+                        println!(" load 0x{:X}", vx);
                     }
                     _ => {
                         return Err(format!("Instruction cannot be matched: 0x{:04X}", instr));

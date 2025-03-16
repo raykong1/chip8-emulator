@@ -9,7 +9,7 @@ fn main() -> Result<(), String>{
     let height = 32;
     let scale = 10;
     // println!("Current dir: {:?}", std::env::current_dir().unwrap());
-    emu.load_and_execute("test_roms/test_opcode.ch8".to_string()).unwrap();
+    emu.load_and_execute("test_roms/6-keypad.ch8".to_string()).unwrap();
     Ok(())
         // window.
 }
